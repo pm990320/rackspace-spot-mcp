@@ -45,7 +45,7 @@ rackspace-spot-mcp
 
 ```bash
 # Clone the repository
-git clone https://github.com/spotlabshq/rackspace-spot-mcp.git
+git clone https://github.com/pm990320/rackspace-spot-mcp.git
 cd rackspace-spot-mcp
 
 # Install dependencies
@@ -53,6 +53,25 @@ npm install
 
 # Build the project
 npm run build
+
+# Run the server
+RACKSPACE_SPOT_REFRESH_TOKEN=your-token node dist/index.js
+```
+
+When using a local build with Claude Desktop or Claude Code, point to the built `dist/index.js`:
+
+```json
+{
+  "mcpServers": {
+    "rackspace-spot": {
+      "command": "node",
+      "args": ["/path/to/rackspace-spot-mcp/dist/index.js"],
+      "env": {
+        "RACKSPACE_SPOT_REFRESH_TOKEN": "your-refresh-token-here"
+      }
+    }
+  }
+}
 ```
 
 ## Getting Your Refresh Token
