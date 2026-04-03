@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.3](https://github.com/pm990320/rackspace-spot-mcp/compare/v1.0.2...v1.0.3) (2026-04-03)
+
+
+### Bug Fixes
+
+* use tag_name for checkout to fix npm publish ([a4c6106](https://github.com/pm990320/rackspace-spot-mcp/commit/a4c61064f946b3b1b75eadfcbf33a7b2fd33eba3))
+* use tag_name output for checkout instead of github.ref ([bfff3ca](https://github.com/pm990320/rackspace-spot-mcp/commit/bfff3cab6d71e62cd1fd224369ec27f97c542266))
+
 ## [1.0.2](https://github.com/pm990320/rackspace-spot-mcp/compare/v1.0.1...v1.0.2) (2026-04-03)
 
 
