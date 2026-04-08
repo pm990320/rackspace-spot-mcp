@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { spawn, type ChildProcess } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -23,7 +22,6 @@ const serverPath = path.join(__dirname, "..", "dist", "index.js");
 describe("MCP Server Integration", () => {
   let client: Client;
   let transport: StdioClientTransport;
-  let serverProcess: ChildProcess;
 
   const hasToken = !!process.env.RACKSPACE_SPOT_REFRESH_TOKEN;
 
@@ -85,6 +83,7 @@ describe("MCP Server Integration", () => {
 
       // Organizations
       expect(toolNames).toContain("list_organizations");
+      expect(toolNames).toContain("list_configured_profiles");
 
       // Cloudspaces
       expect(toolNames).toContain("list_cloudspaces");
@@ -117,11 +116,9 @@ describe("MCP Server Integration", () => {
 
       expect(listRegions).toBeDefined();
       expect(listRegions?.description).toContain("regions");
-      expect(listRegions?.inputSchema).toEqual({
-        type: "object",
-        properties: {},
-        required: [],
-      });
+      expect(listRegions?.inputSchema.type).toBe("object");
+      expect(listRegions?.inputSchema.required).toEqual([]);
+      expect(listRegions?.inputSchema.properties).toHaveProperty("profile");
     });
 
     it("should have correct schema for create_cloudspace tool", async () => {
@@ -131,9 +128,11 @@ describe("MCP Server Integration", () => {
       );
 
       expect(createCloudspace).toBeDefined();
-      expect(createCloudspace?.inputSchema.required).toContain("namespace");
+      expect(createCloudspace?.inputSchema.required).not.toContain("namespace");
       expect(createCloudspace?.inputSchema.required).toContain("name");
       expect(createCloudspace?.inputSchema.required).toContain("region");
+      expect(createCloudspace?.inputSchema.properties).toHaveProperty("profile");
+      expect(createCloudspace?.description).toContain("optional profile selection");
       expect(createCloudspace?.inputSchema.properties).toHaveProperty(
         "haControlPlane"
       );
@@ -148,8 +147,23 @@ describe("MCP Server Integration", () => {
       expect(createSpotPool).toBeDefined();
       expect(createSpotPool?.inputSchema.required).toContain("bidPrice");
       expect(createSpotPool?.inputSchema.required).toContain("serverClassName");
+      expect(createSpotPool?.inputSchema.required).not.toContain("namespace");
+      expect(createSpotPool?.inputSchema.properties).toHaveProperty("profile");
       expect(createSpotPool?.inputSchema.properties).toHaveProperty("minNodes");
       expect(createSpotPool?.inputSchema.properties).toHaveProperty("maxNodes");
+    });
+
+    it("should expose configured profile listing as a local-only tool", async () => {
+      const result = await client.callTool({
+        name: "list_configured_profiles",
+        arguments: {},
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0]).toHaveProperty("type", "text");
+      if (result.content[0].type === "text") {
+        expect(JSON.parse(result.content[0].text)).toEqual([]);
+      }
     });
   });
 
@@ -371,6 +385,186 @@ describe("MCP Server Integration", () => {
       // May succeed but return empty or error depending on API
       expect(result.content).toBeDefined();
     });
+  });
+});
+
+describe("Profile Configuration Integration", () => {
+  let client: Client;
+  let transport: StdioClientTransport;
+
+  beforeAll(async () => {
+    transport = new StdioClientTransport({
+      command: "node",
+      args: [serverPath],
+      env: {
+        ...process.env,
+        RACKSPACE_SPOT_PROFILES: JSON.stringify({
+          gecckio: {
+            tokenEnv: "RACKSPACE_SPOT_TOKEN_SHARED",
+            defaultNamespace: "org-gecckio",
+            defaultOrganizationName: "gecckio",
+          },
+          pitchlane: {
+            tokenEnv: "RACKSPACE_SPOT_TOKEN_SHARED",
+            defaultNamespace: "org-pitchlane",
+            defaultOrganizationName: "pitchlane",
+          },
+        }),
+        RACKSPACE_SPOT_TOKEN_SHARED: "test-token-for-profiles",
+      },
+    });
+
+    client = new Client(
+      {
+        name: "profile-config-test-client",
+        version: "1.0.0",
+      },
+      {
+        capabilities: {},
+      }
+    );
+
+    await client.connect(transport);
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  it("should list configured profiles and defaults without hitting the API", async () => {
+    const result = await client.callTool({
+      name: "list_configured_profiles",
+      arguments: {},
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]).toHaveProperty("type", "text");
+    if (result.content[0].type === "text") {
+      const profiles = JSON.parse(result.content[0].text);
+      expect(profiles).toEqual([
+        {
+          name: "gecckio",
+          tokenEnv: "RACKSPACE_SPOT_TOKEN_SHARED",
+          usesInlineRefreshToken: false,
+          fallsBackToLegacyRefreshToken: false,
+          defaultNamespace: "org-gecckio",
+          defaultOrganizationName: "gecckio",
+        },
+        {
+          name: "pitchlane",
+          tokenEnv: "RACKSPACE_SPOT_TOKEN_SHARED",
+          usesInlineRefreshToken: false,
+          fallsBackToLegacyRefreshToken: false,
+          defaultNamespace: "org-pitchlane",
+          defaultOrganizationName: "pitchlane",
+        },
+      ]);
+    }
+  });
+
+  it("should error when multiple profiles are configured and no profile/default is selected", async () => {
+    const result = await client.callTool({
+      name: "list_cloudspaces",
+      arguments: {},
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toHaveProperty("type", "text");
+    if (result.content[0].type === "text") {
+      expect(result.content[0].text).toContain(
+        "Multiple Rackspace Spot profiles are configured. Specify profile explicitly or set RACKSPACE_SPOT_DEFAULT_PROFILE."
+      );
+    }
+  });
+
+  it("should error for an unknown profile before hitting the API", async () => {
+    const result = await client.callTool({
+      name: "list_cloudspaces",
+      arguments: {
+        profile: "missing",
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    if (result.content[0].type === "text") {
+      expect(result.content[0].text).toContain(
+        "Unknown Rackspace Spot profile 'missing'"
+      );
+    }
+  });
+});
+
+describe("Default Profile Integration", () => {
+  let client: Client;
+  let transport: StdioClientTransport;
+
+  beforeAll(async () => {
+    transport = new StdioClientTransport({
+      command: "node",
+      args: [serverPath],
+      env: {
+        ...process.env,
+        RACKSPACE_SPOT_PROFILES: JSON.stringify({
+          gecckio: {
+            tokenEnv: "RACKSPACE_SPOT_TOKEN_GECCKIO",
+            defaultNamespace: "org-gecckio",
+            defaultOrganizationName: "gecckio",
+          },
+          pitchlane: {
+            tokenEnv: "RACKSPACE_SPOT_TOKEN_PITCHLANE",
+            defaultNamespace: "org-pitchlane",
+            defaultOrganizationName: "pitchlane",
+          },
+        }),
+        RACKSPACE_SPOT_DEFAULT_PROFILE: "gecckio",
+        RACKSPACE_SPOT_TOKEN_GECCKIO: "test-token-gecckio",
+        RACKSPACE_SPOT_TOKEN_PITCHLANE: "test-token-pitchlane",
+      },
+    });
+
+    client = new Client(
+      {
+        name: "default-profile-test-client",
+        version: "1.0.0",
+      },
+      {
+        capabilities: {},
+      }
+    );
+
+    await client.connect(transport);
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  it("should allow namespace/organizationName omission when default profile provides them", async () => {
+    const cloudspaceResult = await client.callTool({
+      name: "get_cloudspace",
+      arguments: {
+        name: "demo",
+      },
+    });
+
+    expect(cloudspaceResult.isError).toBe(true);
+    if (cloudspaceResult.content[0].type === "text") {
+      expect(cloudspaceResult.content[0].text).not.toContain("namespace is required");
+    }
+
+    const kubeconfigResult = await client.callTool({
+      name: "get_kubeconfig",
+      arguments: {
+        cloudspaceName: "demo",
+      },
+    });
+
+    expect(kubeconfigResult.isError).toBe(true);
+    if (kubeconfigResult.content[0].type === "text") {
+      expect(kubeconfigResult.content[0].text).not.toContain(
+        "organizationName is required"
+      );
+    }
   });
 });
 

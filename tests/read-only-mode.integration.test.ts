@@ -19,6 +19,7 @@ const WRITABLE_TOOLS = [
 
 // Read-only tools that should always be available
 const READ_ONLY_TOOLS = [
+  "list_configured_profiles",
   "list_regions",
   "get_region",
   "list_server_classes",
@@ -120,7 +121,7 @@ describe("Read-Only Mode", () => {
     it("should have correct tool count in read-only mode", async () => {
       const tools = await readOnlyClient.listTools();
 
-      // Should only have read-only tools (18 total - 6 writable = 18 tools)
+      // Should only have read-only tools
       expect(tools.tools.length).toBe(READ_ONLY_TOOLS.length);
     });
   });

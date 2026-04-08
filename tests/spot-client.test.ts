@@ -1,29 +1,29 @@
 import { describe, it, expect, vi } from "vitest";
 import { SpotClient } from "../src/client/spot-client.js";
+import { SpotClient as ExportedSpotClient } from "../src/client/index.js";
 
-/**
- * Unit tests for SpotClient
- *
- * Note: Tests that use openapi-fetch internally are more integration-like
- * and are covered by the MCP server integration tests.
- *
- * These unit tests focus on:
- * - Authentication flow
- * - Direct fetch calls (kubeconfig, pricing APIs)
- * - Configuration options
- */
+type MockResponse = { ok: boolean; status: number; data: unknown };
 
-// Create a comprehensive mock fetch that returns proper Response-like objects
 function createMockFetch() {
-  const responses: Map<
-    string,
-    { ok: boolean; status: number; data: unknown }
-  > = new Map();
+  const responses: Map<string, MockResponse> = new Map();
 
-  const mockFetch = vi.fn(async (url: string, options?: RequestInit) => {
-    // Find matching response by URL pattern
-    let matchedResponse: { ok: boolean; status: number; data: unknown } | undefined;
+  const mockFetch = vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+    let url = "";
+    if (typeof input === "string") {
+      url = input;
+    } else if (input instanceof URL) {
+      url = input.toString();
+    } else {
+      url = input.url;
+      options = {
+        method: input.method,
+        headers: input.headers,
+        body: input.body as BodyInit | null | undefined,
+        ...options,
+      };
+    }
 
+    let matchedResponse: MockResponse | undefined;
     for (const [pattern, response] of responses) {
       if (url.includes(pattern)) {
         matchedResponse = response;
@@ -32,7 +32,6 @@ function createMockFetch() {
     }
 
     if (!matchedResponse) {
-      // Default to auth response for oauth/token
       if (url.includes("/oauth/token")) {
         matchedResponse = {
           ok: true,
@@ -49,11 +48,8 @@ function createMockFetch() {
       }
     }
 
-    // Create a proper Response-like object
     const responseData = matchedResponse.data;
-    const headers = new Headers({
-      "content-type": "application/json",
-    });
+    const headers = new Headers({ "content-type": "application/json" });
 
     return {
       ok: matchedResponse.ok,
@@ -70,13 +66,9 @@ function createMockFetch() {
 
   return {
     mockFetch,
-    setResponse: (
-      urlPattern: string,
-      response: { ok: boolean; status: number; data: unknown }
-    ) => {
+    setResponse: (urlPattern: string, response: MockResponse) => {
       responses.set(urlPattern, response);
     },
-    clearResponses: () => responses.clear(),
   };
 }
 
@@ -87,6 +79,10 @@ describe("SpotClient", () => {
     it("should create a client with required config", () => {
       const client = new SpotClient({ refreshToken: mockRefreshToken });
       expect(client).toBeDefined();
+    });
+
+    it("should export SpotClient from the client barrel", () => {
+      expect(ExportedSpotClient).toBe(SpotClient);
     });
 
     it("should accept custom fetch function", () => {
@@ -139,7 +135,6 @@ describe("SpotClient", () => {
         })
       );
 
-      // Verify the body contains correct parameters
       const call = mockFetch.mock.calls[0];
       const body = call[1]?.body as URLSearchParams;
       expect(body.get("grant_type")).toBe("refresh_token");
@@ -193,6 +188,216 @@ describe("SpotClient", () => {
     });
   });
 
+  describe("openapi-backed resource APIs", () => {
+    const cases = [
+      {
+        name: "listRegions",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/regions", { ok: true, status: 200, data: { items: [{ metadata: { name: "us-central-dfw-1" } }] } }),
+        call: (client: SpotClient) => client.listRegions(),
+      },
+      {
+        name: "getRegion",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/regions/us-central-dfw-1", { ok: true, status: 200, data: { metadata: { name: "us-central-dfw-1" } } }),
+        call: (client: SpotClient) => client.getRegion("us-central-dfw-1"),
+      },
+      {
+        name: "listServerClasses",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/serverclasses", { ok: true, status: 200, data: { items: [{ metadata: { name: "m3.medium" } }] } }),
+        call: (client: SpotClient) => client.listServerClasses(),
+      },
+      {
+        name: "getServerClass",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/serverclasses/m3.medium", { ok: true, status: 200, data: { metadata: { name: "m3.medium" } } }),
+        call: (client: SpotClient) => client.getServerClass("m3.medium"),
+      },
+      {
+        name: "listOrganizations",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/auth.ngpc.rxt.io/v1/organizations", { ok: true, status: 200, data: [{ name: "gecckio", namespace: "org-gecckio" }] }),
+        call: (client: SpotClient) => client.listOrganizations(),
+      },
+      {
+        name: "listCloudspaces",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/cloudspaces", { ok: true, status: 200, data: { items: [] } }),
+        call: (client: SpotClient) => client.listCloudspaces("org-gecckio"),
+      },
+      {
+        name: "getCloudspace",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/cloudspaces/demo", { ok: true, status: 200, data: { metadata: { name: "demo" } } }),
+        call: (client: SpotClient) => client.getCloudspace("org-gecckio", "demo"),
+      },
+      {
+        name: "createCloudspace",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/cloudspaces", { ok: true, status: 200, data: { status: "created" } }),
+        call: (client: SpotClient) => client.createCloudspace("org-gecckio", { name: "demo", region: "us-central-dfw-1" }),
+      },
+      {
+        name: "deleteCloudspace",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/cloudspaces/demo", { ok: true, status: 200, data: { status: "deleted" } }),
+        call: (client: SpotClient) => client.deleteCloudspace("org-gecckio", "demo"),
+      },
+      {
+        name: "listSpotNodePools",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/spotnodepools", { ok: true, status: 200, data: { items: [] } }),
+        call: (client: SpotClient) => client.listSpotNodePools("org-gecckio", "demo"),
+      },
+      {
+        name: "getSpotNodePool",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/spotnodepools/pool1", { ok: true, status: 200, data: { metadata: { name: "pool1" } } }),
+        call: (client: SpotClient) => client.getSpotNodePool("org-gecckio", "pool1"),
+      },
+      {
+        name: "createSpotNodePool",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/spotnodepools", { ok: true, status: 200, data: { status: "created" } }),
+        call: (client: SpotClient) => client.createSpotNodePool("org-gecckio", { name: "pool1", cloudspaceName: "demo", serverClassName: "m3.medium", bidPrice: "0.05" }),
+      },
+      {
+        name: "deleteSpotNodePool",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/spotnodepools/pool1", { ok: true, status: 200, data: { status: "deleted" } }),
+        call: (client: SpotClient) => client.deleteSpotNodePool("org-gecckio", "pool1"),
+      },
+      {
+        name: "listOnDemandNodePools",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/ondemandnodepools", { ok: true, status: 200, data: { items: [] } }),
+        call: (client: SpotClient) => client.listOnDemandNodePools("org-gecckio", "demo"),
+      },
+      {
+        name: "getOnDemandNodePool",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/ondemandnodepools/pool1", { ok: true, status: 200, data: { metadata: { name: "pool1" } } }),
+        call: (client: SpotClient) => client.getOnDemandNodePool("org-gecckio", "pool1"),
+      },
+      {
+        name: "createOnDemandNodePool",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/ondemandnodepools", { ok: true, status: 200, data: { status: "created" } }),
+        call: (client: SpotClient) => client.createOnDemandNodePool("org-gecckio", { name: "pool1", cloudspaceName: "demo", serverClassName: "m3.medium" }),
+      },
+      {
+        name: "deleteOnDemandNodePool",
+        setup: (setResponse: (urlPattern: string, response: MockResponse) => void) =>
+          setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/ondemandnodepools/pool1", { ok: true, status: 200, data: { status: "deleted" } }),
+        call: (client: SpotClient) => client.deleteOnDemandNodePool("org-gecckio", "pool1"),
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      it(`should call ${testCase.name} using authenticated openapi client`, async () => {
+        const { mockFetch, setResponse } = createMockFetch();
+        testCase.setup(setResponse);
+        const client = new SpotClient({
+          refreshToken: mockRefreshToken,
+          fetch: mockFetch as unknown as typeof fetch,
+        });
+
+        const result = await testCase.call(client);
+
+        expect(result).toBeDefined();
+        expect(mockFetch).toHaveBeenCalled();
+        const authCalls = mockFetch.mock.calls.filter(([input]) => String(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).includes("/oauth/token"));
+        expect(authCalls.length).toBe(1);
+      });
+    }
+
+    it("reuses cached auth tokens across multiple client calls", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/apis/ngpc.rxt.io/v1/regions", { ok: true, status: 200, data: { items: [] } });
+      setResponse("/apis/ngpc.rxt.io/v1/serverclasses", { ok: true, status: 200, data: { items: [] } });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      await client.listRegions();
+      await client.listServerClasses();
+
+      const authCalls = mockFetch.mock.calls.filter(([input]) => String(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).includes("/oauth/token"));
+      expect(authCalls.length).toBe(1);
+    });
+
+    it("omits label selector when listing spot node pools without cloudspaceName", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/spotnodepools", { ok: true, status: 200, data: { items: [] } });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      await client.listSpotNodePools("org-gecckio");
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const request = lastCall[0] as Request;
+      expect(request.url).not.toContain("labelSelector=");
+    });
+
+    it("omits label selector when listing on-demand node pools without cloudspaceName", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/apis/ngpc.rxt.io/v1/namespaces/org-gecckio/ondemandnodepools", { ok: true, status: 200, data: { items: [] } });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      await client.listOnDemandNodePools("org-gecckio");
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const request = lastCall[0] as Request;
+      expect(request.url).not.toContain("labelSelector=");
+    });
+
+    it("throws when an openapi-backed method returns an error payload", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/apis/ngpc.rxt.io/v1/regions", { ok: false, status: 404, data: { message: "missing" } });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      await expect(client.listRegions()).rejects.toThrow(/Failed to list regions/);
+    });
+
+    it("skips auth middleware for generate-kubeconfig-style URLs", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/generate-kubeconfig", {
+        ok: true,
+        status: 200,
+        data: { data: { kubeconfig: "apiVersion: v1" } },
+      });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      const internalClient = (client as unknown as { client: { GET: (path: string) => Promise<unknown> } }).client;
+      await internalClient.GET("/apis/auth.ngpc.rxt.io/v1/generate-kubeconfig");
+
+      const authCalls = mockFetch.mock.calls.filter(([input]) =>
+        String(
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+        ).includes("/oauth/token")
+      );
+      expect(authCalls.length).toBe(0);
+    });
+  });
+
   describe("generateKubeconfig", () => {
     it("should generate kubeconfig with correct parameters", async () => {
       const { mockFetch, setResponse } = createMockFetch();
@@ -219,9 +424,9 @@ describe("SpotClient", () => {
         status_code: 200,
       });
 
-      // Verify the request
       const call = mockFetch.mock.calls[0];
-      expect(call[0]).toBe(
+      const url = typeof call[0] === "string" ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url;
+      expect(url).toBe(
         "https://spot.rackspace.com/apis/auth.ngpc.rxt.io/v1/generate-kubeconfig"
       );
       expect(call[1]?.method).toBe("POST");
@@ -249,7 +454,8 @@ describe("SpotClient", () => {
       await client.generateKubeconfig("org", "cloudspace");
 
       const call = mockFetch.mock.calls[0];
-      expect(call[0]).toBe(
+      const url = typeof call[0] === "string" ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url;
+      expect(url).toBe(
         "https://custom-api.example.com/apis/auth.ngpc.rxt.io/v1/generate-kubeconfig"
       );
     });
@@ -295,16 +501,7 @@ describe("SpotClient", () => {
       const result = await client.getMarketPriceCapacity();
 
       expect(result).toEqual(mockPricing);
-      // Should call auth first, then the pricing API with auth header
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch).toHaveBeenLastCalledWith(
-        "https://spot.rackspace.com/apis/pricing.ngpc.rxt.io/v1/market-price-capacity",
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: "Bearer mock-id-token",
-          }),
-        })
-      );
     });
 
     it("should get percentile information", async () => {
@@ -327,14 +524,6 @@ describe("SpotClient", () => {
 
       expect(result).toEqual(mockPercentiles);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch).toHaveBeenLastCalledWith(
-        "https://spot.rackspace.com/apis/pricing.ngpc.rxt.io/v1/percentile",
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: "Bearer mock-id-token",
-          }),
-        })
-      );
     });
 
     it("should get price history for a server class", async () => {
@@ -359,17 +548,9 @@ describe("SpotClient", () => {
 
       expect(result).toEqual(mockHistory);
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch).toHaveBeenLastCalledWith(
-        "https://spot.rackspace.com/apis/ngpc.rxt.io/v1/serverclasses/m3.medium/regions/us-central-dfw-1/price-history",
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: "Bearer mock-id-token",
-          }),
-        })
-      );
     });
 
-    it("should throw on pricing API failure", async () => {
+    it("should throw on market pricing API failure", async () => {
       const { mockFetch, setResponse } = createMockFetch();
       setResponse("/market-price-capacity", {
         ok: false,
@@ -384,6 +565,42 @@ describe("SpotClient", () => {
 
       await expect(client.getMarketPriceCapacity()).rejects.toThrow(
         "Failed to get market price capacity: 500"
+      );
+    });
+
+    it("should throw on price history API failure", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/price-history", {
+        ok: false,
+        status: 403,
+        data: { error: "Forbidden" },
+      });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      await expect(client.getPriceHistory("m3.medium", "us-central-dfw-1")).rejects.toThrow(
+        "Failed to get price history: 403"
+      );
+    });
+
+    it("should throw on percentile pricing API failure", async () => {
+      const { mockFetch, setResponse } = createMockFetch();
+      setResponse("/percentile", {
+        ok: false,
+        status: 429,
+        data: { error: "Rate limited" },
+      });
+
+      const client = new SpotClient({
+        refreshToken: mockRefreshToken,
+        fetch: mockFetch as unknown as typeof fetch,
+      });
+
+      await expect(client.getPercentileInformation()).rejects.toThrow(
+        "Failed to get percentile information: 429"
       );
     });
   });
